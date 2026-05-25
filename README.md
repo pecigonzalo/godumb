@@ -50,6 +50,7 @@ Then:
 ```bash
 task test
 task check
+task check:examples
 task build
 task gen:examples
 task sync:gobyexample

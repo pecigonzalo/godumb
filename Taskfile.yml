@@ -16,6 +16,11 @@ tasks:
     cmds:
       - go run ./cmd/godumb check ./examples/hello.gdb
 
+  check:examples:
+    desc: Check all .gdb examples
+    cmds:
+      - find ./examples -name '*.gdb' -print0 | xargs -0 go run ./cmd/godumb check
+
   lint:
     desc: Run linter
     cmds:

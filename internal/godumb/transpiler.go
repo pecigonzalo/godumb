@@ -5,9 +5,10 @@ import (
 	"bytes"
 	"fmt"
 	"go/format"
+	"go/parser"
+	"go/scanner"
+	"go/token"
 	"strings"
-	"unicode"
-	"unicode/utf8"
 )
 
 // TranspileOptions controls optional GoDumb transpilation behavior.
@@ -28,6 +29,7 @@ type tokenSpan struct {
 	startCol   int
 	endCol     int
 	sourceLine int
+	tokenIndex int
 }
 
 // Map returns the originating GoDumb source line for a generated Go position.
@@ -54,6 +56,32 @@ func (m PositionMapper) Map(generatedLine, generatedColumn int) (int, bool) {
 	}
 
 	return spans[len(spans)-1].sourceLine, true
+}
+
+func (m PositionMapper) tokenIndexAt(generatedLine, generatedColumn int) (int, bool) {
+	spans := m.spansByGeneratedLine[generatedLine]
+	if len(spans) == 0 {
+		return 0, false
+	}
+
+	if generatedColumn <= 0 {
+		generatedColumn = 1
+	}
+
+	if generatedColumn < spans[0].startCol {
+		return spans[0].tokenIndex, true
+	}
+
+	for i, span := range spans {
+		if generatedColumn <= span.endCol {
+			return span.tokenIndex, true
+		}
+		if i+1 < len(spans) && generatedColumn < spans[i+1].startCol {
+			return spans[i+1].tokenIndex, true
+		}
+	}
+
+	return spans[len(spans)-1].tokenIndex, true
 }
 
 // Transpile converts GoDumb source (one token per line) into canonical Go.
@@ -115,6 +143,54 @@ func readGoDumbTokens(src []byte) ([]sourceToken, error) {
 }
 
 func reconstructGoSource(tokens []sourceToken) (string, PositionMapper) {
+	if len(tokens) == 1 {
+		source, mapper := renderTokens(tokens, nil)
+		return source, mapper
+	}
+
+	separators := make([]byte, len(tokens)-1)
+	for i := range separators {
+		if strings.HasPrefix(tokens[i].text, "//") {
+			separators[i] = '\n'
+			continue
+		}
+		separators[i] = ' '
+	}
+
+	source, mapper := renderTokens(tokens, separators)
+
+	maxIterations := len(tokens)*2 + 8
+	for i := 0; i < maxIterations; i++ {
+		err, hasError := firstParseError(source)
+		if !hasError {
+			return source, mapper
+		}
+
+		if !isRecoverableBoundaryError(err.message) {
+			return source, mapper
+		}
+
+		tokenIdx, ok := mapper.tokenIndexAt(err.line, err.column)
+		if !ok || tokenIdx == 0 {
+			return source, mapper
+		}
+
+		sepIdx := tokenIdx - 1
+		if sepIdx < 0 || sepIdx >= len(separators) {
+			return source, mapper
+		}
+		if separators[sepIdx] == '\n' {
+			return source, mapper
+		}
+
+		separators[sepIdx] = '\n'
+		source, mapper = renderTokens(tokens, separators)
+	}
+
+	return source, mapper
+}
+
+func renderTokens(tokens []sourceToken, separators []byte) (string, PositionMapper) {
 	var out strings.Builder
 	out.Grow(len(tokens) * 3)
 
@@ -131,194 +207,63 @@ func reconstructGoSource(tokens []sourceToken) (string, PositionMapper) {
 			startCol:   startCol,
 			endCol:     generatedCol - 1,
 			sourceLine: curr.sourceLine,
+			tokenIndex: i,
 		})
 
 		if i == len(tokens)-1 {
 			break
 		}
 
-		next := tokens[i+1]
-		if shouldInsertLineBreak(curr.text, next.text) {
+		sep := byte(' ')
+		if len(separators) > 0 {
+			sep = separators[i]
+		}
+
+		if sep == '\n' {
 			out.WriteByte('\n')
 			generatedLine++
 			generatedCol = 1
-		} else {
-			out.WriteByte(' ')
-			generatedCol++
+			continue
 		}
+
+		out.WriteByte(' ')
+		generatedCol++
 	}
 
 	out.WriteByte('\n')
 	return out.String(), mapper
 }
 
-func shouldInsertLineBreak(curr, next string) bool {
-	if strings.HasPrefix(curr, "//") {
-		return true
+type parseError struct {
+	line    int
+	column  int
+	message string
+}
+
+func firstParseError(source string) (parseError, bool) {
+	_, err := parser.ParseFile(token.NewFileSet(), "generated.go", source, parser.AllErrors)
+	if err == nil {
+		return parseError{}, false
 	}
 
-	if curr == "}" {
-		switch next {
-		case ")", "]", ",", ".", ";", ":":
-			return false
-		default:
-			return true
+	switch parsed := err.(type) {
+	case scanner.ErrorList:
+		if len(parsed) == 0 {
+			return parseError{message: err.Error()}, true
 		}
-	}
-
-	if canEndStatement(curr) && canStartStatement(next) {
-		return true
-	}
-
-	if next == "case" || next == "default" {
-		return canEndStatement(curr) || curr == "}" || curr == ":"
-	}
-
-	return false
-}
-
-func canEndStatement(tok string) bool {
-	if tok == ")" || tok == "}" || tok == "++" || tok == "--" {
-		return true
-	}
-
-	if endStmtKeywords[tok] {
-		return true
-	}
-
-	kind := classifyLexeme(tok)
-	return kind == lexemeIdentifier || kind == lexemeLiteral
-}
-
-func canStartStatement(tok string) bool {
-	if startStmtKeywords[tok] || prefixExprStart[tok] {
-		return true
-	}
-
-	kind := classifyLexeme(tok)
-	return kind == lexemeIdentifier || kind == lexemeLiteral
-}
-
-type lexemeKind uint8
-
-const (
-	lexemeUnknown lexemeKind = iota
-	lexemeIdentifier
-	lexemeLiteral
-)
-
-func classifyLexeme(tok string) lexemeKind {
-	if isIdentifier(tok) {
-		return lexemeIdentifier
-	}
-	if isLiteral(tok) {
-		return lexemeLiteral
-	}
-	return lexemeUnknown
-}
-
-func isIdentifier(tok string) bool {
-	if tok == "" {
-		return false
-	}
-
-	r, size := utf8.DecodeRuneInString(tok)
-	if r == utf8.RuneError {
-		return false
-	}
-	if r != '_' && !unicode.IsLetter(r) {
-		return false
-	}
-
-	for _, r := range tok[size:] {
-		if r != '_' && !unicode.IsLetter(r) && !unicode.IsDigit(r) {
-			return false
+		first := parsed[0]
+		return parseError{line: first.Pos.Line, column: first.Pos.Column, message: first.Msg}, true
+	case *scanner.ErrorList:
+		if len(*parsed) == 0 {
+			return parseError{message: err.Error()}, true
 		}
+		first := (*parsed)[0]
+		return parseError{line: first.Pos.Line, column: first.Pos.Column, message: first.Msg}, true
+	default:
+		return parseError{message: err.Error()}, true
 	}
-
-	return !allKeywords[tok]
 }
 
-func isLiteral(tok string) bool {
-	if tok == "" {
-		return false
-	}
-
-	if strings.HasPrefix(tok, "\"") || strings.HasPrefix(tok, "`") || strings.HasPrefix(tok, "'") {
-		return true
-	}
-
-	r, _ := utf8.DecodeRuneInString(tok)
-	if unicode.IsDigit(r) {
-		return true
-	}
-
-	return len(tok) > 1 && tok[0] == '.' && tok[1] >= '0' && tok[1] <= '9'
-}
-
-var endStmtKeywords = map[string]bool{
-	"break":       true,
-	"continue":    true,
-	"fallthrough": true,
-	"return":      true,
-}
-
-var startStmtKeywords = map[string]bool{
-	"break":       true,
-	"case":        true,
-	"const":       true,
-	"continue":    true,
-	"default":     true,
-	"defer":       true,
-	"fallthrough": true,
-	"for":         true,
-	"func":        true,
-	"go":          true,
-	"goto":        true,
-	"if":          true,
-	"import":      true,
-	"package":     true,
-	"return":      true,
-	"select":      true,
-	"switch":      true,
-	"type":        true,
-	"var":         true,
-}
-
-var prefixExprStart = map[string]bool{
-	"!":  true,
-	"*":  true,
-	"+":  true,
-	"-":  true,
-	"<-": true,
-	"&":  true,
-	"^":  true,
-}
-
-var allKeywords = map[string]bool{
-	"break":       true,
-	"case":        true,
-	"chan":        true,
-	"const":       true,
-	"continue":    true,
-	"default":     true,
-	"defer":       true,
-	"else":        true,
-	"fallthrough": true,
-	"for":         true,
-	"func":        true,
-	"go":          true,
-	"goto":        true,
-	"if":          true,
-	"import":      true,
-	"interface":   true,
-	"map":         true,
-	"package":     true,
-	"range":       true,
-	"return":      true,
-	"select":      true,
-	"struct":      true,
-	"switch":      true,
-	"type":        true,
-	"var":         true,
+func isRecoverableBoundaryError(msg string) bool {
+	return strings.Contains(msg, "expected ';'") || strings.Contains(msg, "missing import path")
 }
