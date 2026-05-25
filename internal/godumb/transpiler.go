@@ -13,15 +13,57 @@ import (
 // TranspileOptions controls optional GoDumb transpilation behavior.
 type TranspileOptions struct{}
 
+// TranspileWithMapResult contains reconstructed Go source and position mapping.
+type TranspileWithMapResult struct {
+	Source string
+	Mapper PositionMapper
+}
+
+// PositionMapper maps generated Go positions back to GoDumb source lines.
+type PositionMapper struct {
+	spansByGeneratedLine map[int][]tokenSpan
+}
+
+type tokenSpan struct {
+	startCol   int
+	endCol     int
+	sourceLine int
+}
+
+// Map returns the originating GoDumb source line for a generated Go position.
+func (m PositionMapper) Map(generatedLine, generatedColumn int) (int, bool) {
+	spans := m.spansByGeneratedLine[generatedLine]
+	if len(spans) == 0 {
+		return 0, false
+	}
+
+	if generatedColumn <= 0 {
+		generatedColumn = 1
+	}
+
+	for i, span := range spans {
+		if generatedColumn < span.startCol {
+			if i == 0 {
+				return span.sourceLine, true
+			}
+			return spans[i-1].sourceLine, true
+		}
+		if generatedColumn <= span.endCol {
+			return span.sourceLine, true
+		}
+	}
+
+	return spans[len(spans)-1].sourceLine, true
+}
+
 // Transpile converts GoDumb source (one token per line) into canonical Go.
-func Transpile(src []byte, _ TranspileOptions) (string, error) {
-	tokens, err := readGoDumbTokens(src)
+func Transpile(src []byte, opts TranspileOptions) (string, error) {
+	result, err := TranspileWithSourceMap(src, opts)
 	if err != nil {
 		return "", err
 	}
 
-	reconstructed := reconstructGoSource(tokens)
-	formatted, err := format.Source([]byte(reconstructed))
+	formatted, err := format.Source([]byte(result.Source))
 	if err != nil {
 		return "", fmt.Errorf("invalid GoDumb source: %w", err)
 	}
@@ -29,16 +71,37 @@ func Transpile(src []byte, _ TranspileOptions) (string, error) {
 	return string(formatted), nil
 }
 
-func readGoDumbTokens(src []byte) ([]string, error) {
-	var tokens []string
+// TranspileWithSourceMap reconstructs Go source and returns source position mapping.
+func TranspileWithSourceMap(src []byte, _ TranspileOptions) (TranspileWithMapResult, error) {
+	tokens, err := readGoDumbTokens(src)
+	if err != nil {
+		return TranspileWithMapResult{}, err
+	}
+
+	reconstructed, mapper := reconstructGoSource(tokens)
+	return TranspileWithMapResult{
+		Source: reconstructed,
+		Mapper: mapper,
+	}, nil
+}
+
+type sourceToken struct {
+	text       string
+	sourceLine int
+}
+
+func readGoDumbTokens(src []byte) ([]sourceToken, error) {
+	var tokens []sourceToken
 
 	s := bufio.NewScanner(bytes.NewReader(src))
+	lineNo := 0
 	for s.Scan() {
+		lineNo++
 		line := strings.TrimSpace(s.Text())
 		if line == "" {
 			continue
 		}
-		tokens = append(tokens, line)
+		tokens = append(tokens, sourceToken{text: line, sourceLine: lineNo})
 	}
 
 	if err := s.Err(); err != nil {
@@ -51,63 +114,47 @@ func readGoDumbTokens(src []byte) ([]string, error) {
 	return tokens, nil
 }
 
-func reconstructGoSource(tokens []string) string {
+func reconstructGoSource(tokens []sourceToken) (string, PositionMapper) {
 	var out strings.Builder
 	out.Grow(len(tokens) * 3)
 
-	state := reconstructionState{}
+	mapper := PositionMapper{spansByGeneratedLine: make(map[int][]tokenSpan)}
+	generatedLine := 1
+	generatedCol := 1
 
 	for i := range tokens {
 		curr := tokens[i]
-		out.WriteString(curr)
+		startCol := generatedCol
+		out.WriteString(curr.text)
+		generatedCol += len(curr.text)
+		mapper.spansByGeneratedLine[generatedLine] = append(mapper.spansByGeneratedLine[generatedLine], tokenSpan{
+			startCol:   startCol,
+			endCol:     generatedCol - 1,
+			sourceLine: curr.sourceLine,
+		})
 
 		if i == len(tokens)-1 {
 			break
 		}
 
-		state = state.after(curr)
 		next := tokens[i+1]
-		if shouldInsertLineBreak(curr, next, state) {
+		if shouldInsertLineBreak(curr.text, next.text) {
 			out.WriteByte('\n')
+			generatedLine++
+			generatedCol = 1
 		} else {
 			out.WriteByte(' ')
+			generatedCol++
 		}
 	}
 
 	out.WriteByte('\n')
-	return out.String()
+	return out.String(), mapper
 }
 
-type reconstructionState struct {
-	parenDepth   int
-	bracketDepth int
-}
-
-func (s reconstructionState) after(tok string) reconstructionState {
-	switch tok {
-	case "(":
-		s.parenDepth++
-	case ")":
-		if s.parenDepth > 0 {
-			s.parenDepth--
-		}
-	case "[":
-		s.bracketDepth++
-	case "]":
-		if s.bracketDepth > 0 {
-			s.bracketDepth--
-		}
-	}
-	return s
-}
-
-func shouldInsertLineBreak(curr, next string, state reconstructionState) bool {
+func shouldInsertLineBreak(curr, next string) bool {
 	if strings.HasPrefix(curr, "//") {
 		return true
-	}
-
-	if state.parenDepth > 0 || state.bracketDepth > 0 {
-		return false
 	}
 
 	if curr == "}" {
@@ -131,7 +178,7 @@ func shouldInsertLineBreak(curr, next string, state reconstructionState) bool {
 }
 
 func canEndStatement(tok string) bool {
-	if tok == ")" || tok == "]" || tok == "}" || tok == "++" || tok == "--" {
+	if tok == ")" || tok == "}" || tok == "++" || tok == "--" {
 		return true
 	}
 

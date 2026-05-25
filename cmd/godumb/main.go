@@ -4,6 +4,12 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"go/ast"
+	"go/importer"
+	"go/parser"
+	"go/scanner"
+	"go/token"
+	"go/types"
 	"io"
 	"os"
 	"os/exec"
@@ -44,6 +50,12 @@ func run(args []string, stdin io.Reader, stdout, stderr io.Writer) int {
 		return 0
 	case "run":
 		if err := runRun(args[1:], stdin, stdout, stderr); err != nil {
+			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
+			return 1
+		}
+		return 0
+	case "check":
+		if err := runCheck(args[1:], stdout); err != nil {
 			_, _ = fmt.Fprintf(stderr, "error: %v\n", err)
 			return 1
 		}
@@ -299,6 +311,104 @@ func runRun(args []string, stdin io.Reader, stdout, stderr io.Writer) error {
 	return nil
 }
 
+func runCheck(args []string, stdout io.Writer) error {
+	fs := flag.NewFlagSet("check", flag.ContinueOnError)
+	fs.SetOutput(io.Discard)
+
+	if err := fs.Parse(args); err != nil {
+		return err
+	}
+
+	paths := fs.Args()
+	if len(paths) == 0 {
+		return errors.New("check requires at least one input file")
+	}
+
+	for _, path := range paths {
+		if err := checkFile(path, stdout); err != nil {
+			return err
+		}
+	}
+
+	return nil
+}
+
+func checkFile(path string, stdout io.Writer) error {
+	src, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read %s: %w", path, err)
+	}
+
+	transpiled, err := godumb.TranspileWithSourceMap(src, godumb.TranspileOptions{})
+	if err != nil {
+		return fmt.Errorf("transpile %s: %w", path, err)
+	}
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, path+".gen.go", transpiled.Source, parser.AllErrors)
+	if err != nil {
+		return mapParserError(path, err, transpiled.Mapper)
+	}
+
+	var typeErrors []types.Error
+	cfg := &types.Config{
+		Importer: importer.Default(),
+		Error: func(err error) {
+			if typed, ok := err.(types.Error); ok {
+				typeErrors = append(typeErrors, typed)
+				return
+			}
+			typeErrors = append(typeErrors, types.Error{Msg: err.Error()})
+		},
+	}
+
+	_, _ = cfg.Check(path, fset, []*ast.File{file}, nil)
+	if len(typeErrors) > 0 {
+		return mapTypeErrors(path, typeErrors, fset, transpiled.Mapper)
+	}
+
+	_, _ = fmt.Fprintf(stdout, "ok: %s\n", path)
+	return nil
+}
+
+func mapParserError(path string, err error, mapper godumb.PositionMapper) error {
+	var entries []string
+	switch parsed := err.(type) {
+	case scanner.ErrorList:
+		for _, item := range parsed {
+			entries = append(entries, formatMappedDiagnostic(path, item.Pos.Line, item.Pos.Column, item.Msg, mapper))
+		}
+	case *scanner.ErrorList:
+		for _, item := range *parsed {
+			entries = append(entries, formatMappedDiagnostic(path, item.Pos.Line, item.Pos.Column, item.Msg, mapper))
+		}
+	default:
+		entries = append(entries, fmt.Sprintf("%s: %v", path, err))
+	}
+
+	return errors.New(strings.Join(entries, "\n"))
+}
+
+func mapTypeErrors(path string, errs []types.Error, fset *token.FileSet, mapper godumb.PositionMapper) error {
+	entries := make([]string, 0, len(errs))
+	for _, item := range errs {
+		pos := fset.Position(item.Pos)
+		entries = append(entries, formatMappedDiagnostic(path, pos.Line, pos.Column, item.Msg, mapper))
+	}
+	return errors.New(strings.Join(entries, "\n"))
+}
+
+func formatMappedDiagnostic(path string, generatedLine, generatedColumn int, msg string, mapper godumb.PositionMapper) string {
+	if sourceLine, ok := mapper.Map(generatedLine, generatedColumn); ok {
+		return fmt.Sprintf("%s:%d: %s (generated %d:%d)", path, sourceLine, msg, generatedLine, generatedColumn)
+	}
+
+	if generatedLine > 0 {
+		return fmt.Sprintf("%s:%d:%d: %s", path, generatedLine, generatedColumn, msg)
+	}
+	return fmt.Sprintf("%s: %s", path, msg)
+}
+
 func transpileToTempGo(sourcePath string) (string, func(), error) {
 	src, err := os.ReadFile(sourcePath)
 	if err != nil {
@@ -358,12 +468,14 @@ Usage:
   godumb transpile [flags] [path]
   godumb build [flags] <path.gdb>
   godumb run <path.gdb> [program args...]
+  godumb check <path.gdb> [...more]
 
 Commands:
   fmt         Format Go code into GoDumb style (one token per line)
   transpile   Convert GoDumb source back to canonical Go
   build       Transpile and compile GoDumb source into a binary
   run         Transpile, compile, and execute GoDumb source
+  check       Validate GoDumb source and map diagnostics to .gdb lines
 
 Flags (fmt):
   -w            write result to file

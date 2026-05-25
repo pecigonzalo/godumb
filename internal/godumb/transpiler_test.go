@@ -1,6 +1,7 @@
 package godumb_test
 
 import (
+	"go/ast"
 	"go/parser"
 	"go/token"
 	"testing"
@@ -98,5 +99,57 @@ main
 	_, err := godumb.Transpile([]byte(input), godumb.TranspileOptions{})
 	if err == nil {
 		t.Fatal("expected error for invalid token")
+	}
+}
+
+func TestTranspileWithSourceMapMapsGeneratedPositions(t *testing.T) {
+	input := `package
+main
+
+func
+main
+(
+)
+{
+unknown
+=
+1
+}
+`
+
+	result, err := godumb.TranspileWithSourceMap([]byte(input), godumb.TranspileOptions{})
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	fset := token.NewFileSet()
+	file, err := parser.ParseFile(fset, "mapped.go", result.Source, parser.AllErrors)
+	if err != nil {
+		t.Fatalf("reconstructed source should parse: %v\n%s", err, result.Source)
+	}
+
+	generatedLine := 0
+	generatedCol := 0
+	ast.Inspect(file, func(node ast.Node) bool {
+		ident, ok := node.(*ast.Ident)
+		if !ok || ident.Name != "unknown" {
+			return true
+		}
+		pos := fset.Position(ident.NamePos)
+		generatedLine = pos.Line
+		generatedCol = pos.Column
+		return false
+	})
+
+	if generatedLine == 0 {
+		t.Fatal("expected unknown identifier in parsed AST")
+	}
+
+	sourceLine, ok := result.Mapper.Map(generatedLine, generatedCol)
+	if !ok {
+		t.Fatal("expected mapped source line")
+	}
+	if sourceLine != 9 {
+		t.Fatalf("unexpected mapped line: got %d want %d", sourceLine, 9)
 	}
 }

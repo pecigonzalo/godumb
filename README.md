@@ -49,6 +49,7 @@ Then:
 
 ```bash
 task test
+task check
 task build
 task gen:examples
 task sync:gobyexample
@@ -93,6 +94,12 @@ Run a GoDumb source directly (transpile + build + execute):
 go run ./cmd/godumb run examples/hello.gdb
 ```
 
+Check GoDumb source with diagnostics mapped to `.gdb` lines:
+
+```bash
+go run ./cmd/godumb check examples/hello.gdb
+```
+
 Sync curated examples from Go by Example:
 
 ```bash
@@ -108,6 +115,6 @@ task sync:gobyexample
 
 ## Next steps
 
-- Add `godumb check`
-- Add richer diagnostics with line mapping (`.gdb` -> generated `.go`)
+- Improve multi-file package checking/building from `.gdb` directories
+- Add richer diagnostics (column-level/token-level mapping)
 - Explore a dedicated parser pipeline inspired by Thorsten Ball when needed

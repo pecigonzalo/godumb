@@ -148,6 +148,54 @@ func TestRunRunRequiresInput(t *testing.T) {
 	}
 }
 
+func TestRunCheckValidFile(t *testing.T) {
+	tmpDir := t.TempDir()
+	sourcePath := writeMinimalGoDumbMain(t, tmpDir)
+
+	var stdout bytes.Buffer
+	if err := runCheck([]string{sourcePath}, &stdout); err != nil {
+		t.Fatalf("runCheck failed: %v", err)
+	}
+
+	if !strings.Contains(stdout.String(), "ok: "+sourcePath) {
+		t.Fatalf("unexpected check output: %q", stdout.String())
+	}
+}
+
+func TestRunCheckMapsTypeErrorsToGoDumbLines(t *testing.T) {
+	tmpDir := t.TempDir()
+	sourcePath := filepath.Join(tmpDir, "bad.gdb")
+	source := `package
+main
+func
+main
+(
+)
+{
+x
+=
+1
+}
+`
+
+	if err := os.WriteFile(sourcePath, []byte(source), 0o644); err != nil {
+		t.Fatalf("write source: %v", err)
+	}
+
+	var stdout bytes.Buffer
+	err := runCheck([]string{sourcePath}, &stdout)
+	if err == nil {
+		t.Fatal("expected check error")
+	}
+
+	if !strings.Contains(err.Error(), sourcePath+":8:") {
+		t.Fatalf("expected mapped GoDumb line in error, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "undefined: x") {
+		t.Fatalf("expected undefined variable message, got: %v", err)
+	}
+}
+
 func writeMinimalGoDumbMain(t *testing.T, dir string) string {
 	t.Helper()
 

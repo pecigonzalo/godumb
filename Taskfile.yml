@@ -11,6 +11,11 @@ tasks:
     cmds:
       - go test ./...
 
+  check:
+    desc: Check core GoDumb examples
+    cmds:
+      - go run ./cmd/godumb check ./examples/hello.gdb
+
   lint:
     desc: Run linter
     cmds:
