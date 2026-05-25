@@ -51,6 +51,10 @@ Then:
 task test
 task build
 task gen:examples
+task sync:gobyexample
+task transpile:hello
+task build:hello
+task run:hello
 ```
 
 Format a file into GoDumb style:
@@ -65,14 +69,45 @@ Write in place:
 go run ./cmd/godumb fmt -w examples/hello.go
 ```
 
+Transpile GoDumb back to Go:
+
+```bash
+go run ./cmd/godumb transpile examples/hello.gdb
+```
+
+Write transpiled output to a `.go` file:
+
+```bash
+go run ./cmd/godumb transpile -w examples/hello.gdb
+```
+
+Build a GoDumb source directly into a binary:
+
+```bash
+go run ./cmd/godumb build -o ./bin/hello examples/hello.gdb
+```
+
+Run a GoDumb source directly (transpile + build + execute):
+
+```bash
+go run ./cmd/godumb run examples/hello.gdb
+```
+
+Sync curated examples from Go by Example:
+
+```bash
+task sync:gobyexample
+```
+
 ## Repo layout
 
 - `cmd/godumb`: CLI entrypoint
-- `internal/godumb`: GoDumb formatter/token-line converter
+- `cmd/godumb-examples`: Go by Example sync helper
+- `internal/godumb`: formatter and transpiler core
 - `examples`: sample `.go` and `.gdb` files
 
 ## Next steps
 
-- Add a dedicated lexer/parser pipeline
-- Define `.gdb` / `.godumb` source conventions
-- Add transpile + execute pipeline (`godumb run`)
+- Add `godumb check`
+- Add richer diagnostics with line mapping (`.gdb` -> generated `.go`)
+- Explore a dedicated parser pipeline inspired by Thorsten Ball when needed

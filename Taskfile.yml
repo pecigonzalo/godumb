@@ -15,7 +15,7 @@ tasks:
     desc: Run linter
     cmds:
       - mkdir -p ./.cache/golangci-lint
-      - GOLANGCI_LINT_CACHE="$PWD/.cache/golangci-lint" golangci-lint run ./...
+      - GOLANGCI_LINT_CACHE="$PWD/.cache/golangci-lint" golangci-lint run ./cmd/... ./internal/...
 
   build:
     desc: Build GoDumb CLI
@@ -23,12 +23,33 @@ tasks:
       - mkdir -p ./bin
       - go build -o ./bin/godumb ./cmd/godumb
 
-  run:hello:
+  fmt:hello:
     desc: Print hello.go in GoDumb style
     cmds:
       - go run ./cmd/godumb fmt ./examples/hello.go
 
+  run:hello:
+    desc: Execute hello.gdb through transpile+build+run pipeline
+    cmds:
+      - go run ./cmd/godumb run ./examples/hello.gdb
+
+  transpile:hello:
+    desc: Print hello.gdb transpiled back to Go
+    cmds:
+      - go run ./cmd/godumb transpile ./examples/hello.gdb
+
+  build:hello:
+    desc: Build hello.gdb into a binary
+    cmds:
+      - mkdir -p ./bin
+      - go run ./cmd/godumb build -o ./bin/hello ./examples/hello.gdb
+
   gen:examples:
-    desc: Regenerate .gdb examples
+    desc: Regenerate local .gdb examples
     cmds:
       - go run ./cmd/godumb fmt ./examples/hello.go > ./examples/hello.gdb
+
+  sync:gobyexample:
+    desc: Fetch curated Go by Example snippets into ./examples/gobyexample
+    cmds:
+      - go run ./cmd/godumb-examples -clean
