@@ -1,0 +1,34 @@
+version: "3"
+
+tasks:
+  fmt:
+    desc: Format Go code
+    cmds:
+      - gofmt -w ./cmd ./internal ./examples
+
+  test:
+    desc: Run tests
+    cmds:
+      - go test ./...
+
+  lint:
+    desc: Run linter
+    cmds:
+      - mkdir -p ./.cache/golangci-lint
+      - GOLANGCI_LINT_CACHE="$PWD/.cache/golangci-lint" golangci-lint run ./...
+
+  build:
+    desc: Build GoDumb CLI
+    cmds:
+      - mkdir -p ./bin
+      - go build -o ./bin/godumb ./cmd/godumb
+
+  run:hello:
+    desc: Print hello.go in GoDumb style
+    cmds:
+      - go run ./cmd/godumb fmt ./examples/hello.go
+
+  gen:examples:
+    desc: Regenerate .gdb examples
+    cmds:
+      - go run ./cmd/godumb fmt ./examples/hello.go > ./examples/hello.gdb
