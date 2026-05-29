@@ -113,9 +113,3 @@ task sync:gobyexample
 - `cmd/godumb-examples`: Go by Example sync helper
 - `internal/godumb`: formatter and transpiler core
 - `examples`: sample `.go` and `.gdb` files
-
-## Next steps
-
-- Improve multi-file package checking/building from `.gdb` directories
-- Add richer diagnostics (column-level/token-level mapping)
-- Explore a dedicated parser pipeline inspired by Thorsten Ball when needed
